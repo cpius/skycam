@@ -16,7 +16,13 @@ DNG; rawpy/LibRaw ignore it, which leaves the corners at ~27% of the centre on t
 This script applies it (corner gain ~3.9x) unless --no-vignette.
 
 --darks: median of the dark frames, subtracted on the raw mosaic before demosaicing.
+--flats: frames of an evenly lit white surface at the same focus (iPad full-white under a sheet of
+paper: ISO 800, 16 ms = 44% of full scale). Their median, normalised per Bayer position, divides
+every frame on the raw mosaic and replaces Apple's vignette model (also fixes colour shading).
 Obstructed frames (a box flap or hand lit in front of the lens) are dropped unless --keep-obstructed.
+Foreground mask (unless --no-foreground-mask): railings and walls are fixed on the sensor while the
+stars move, so in the median of 25 unaligned frames they stand out; those areas become "no data" in
+every frame, so the stack never mixes them into the sky. --mask-only writes <out>_fgmask.jpg and stops.
 
 --solution (phonesolve.py JSON): needed when the sky drifts far across the frame or there is
 foreground in view. Frames are undistorted with the solved focal length and k1, and each frame's
@@ -39,9 +45,12 @@ ap.add_argument("--nstars", type=int, default=400)
 ap.add_argument("--radius", type=float, default=25, help="match radius, px")
 ap.add_argument("--min-inliers", type=int, default=12, help="RANSAC inliers needed to accept a frame's alignment")
 ap.add_argument("--solution", help="phonesolve.py JSON (f_px, k1): undistort every frame first and align with a full homography -- needed when the sky drifts far across the field")
+ap.add_argument("--flats", help="folder of flat frames (same focus; even white light, ~45%% of full scale): every frame is divided by their normalised median on the raw data. Replaces Apple's vignette correction, and also fixes colour shading, dust and pixel response")
 ap.add_argument("--darks", help="folder of dark frames (lens covered, same exposure/ISO): their median is subtracted from every frame on the raw data")
 ap.add_argument("--background", type=float, default=0.10, help="stretched sky level (0..1)")
 ap.add_argument("--no-vignette", action="store_true", help="skip Apple's FixVignetteRadial correction")
+ap.add_argument("--no-foreground-mask", action="store_true", help="keep railings/walls in the stack")
+ap.add_argument("--mask-only", action="store_true", help="write <out>_fgmask.png and the median it came from, then stop")
 ap.add_argument("--keep-obstructed", action="store_true", help="do not drop frames with something bright in front of the lens")
 a = ap.parse_args()
 
@@ -97,13 +106,38 @@ def undistort_maps(shape, f, k1):
         xd, yd = xu * (1 + k1 * r2), yu * (1 + k1 * r2)
     return (xd * f + cx).astype(np.float32), (yd * f + cy).astype(np.float32)
 
+FG = None
+FLAT = None
+if a.flats:
+    ffiles = sorted(glob.glob(os.path.join(a.flats, "*.dng")))
+    assert ffiles, "no flats in " + a.flats
+    fl = []
+    for f in ffiles:
+        with rawpy.imread(f) as r:
+            fl.append(r.raw_image_visible.astype(np.float32) - float(np.mean(r.black_level_per_channel)))
+    FLAT = np.median(fl, axis=0); del fl
+    hh, ww = FLAT.shape
+    for dy in (0, 1):                                   # normalise each Bayer position to 1 at the centre,
+        for dx in (0, 1):                               # so the colour balance is left alone
+            plane = FLAT[dy::2, dx::2]
+            plane /= np.median(plane[hh // 4 - 50:hh // 4 + 50, ww // 4 - 50:ww // 4 + 50])
+    FLAT = np.clip(FLAT, 0.05, None)
+    print("master flat from %d frames: corners at %.0f%% of the centre" % (len(ffiles), 100 * float(np.median(FLAT[:100, :100]))), flush=True)
+    a.no_vignette = True                                # the flat already contains the vignetting
+
 GAIN = None
 def load(f):
     global GAIN
     with rawpy.imread(f) as r:
-        if DARK is not None:                           # subtract on the raw mosaic, before demosaicing
+        if DARK is not None or FLAT is not None:       # calibrate on the raw mosaic, before demosaicing
             raw = r.raw_image_visible
-            raw[:] = np.clip(raw.astype(np.float32) - DARK, 0, 65535).astype(raw.dtype)
+            black = float(np.mean(r.black_level_per_channel))
+            x = raw.astype(np.float32) - black
+            if DARK is not None:
+                x -= DARK
+            if FLAT is not None:
+                x /= FLAT
+            raw[:] = np.clip(x + black, 0, 65535).astype(raw.dtype)
         rgb = r.postprocess(half_size=True, gamma=(1, 1), no_auto_bright=True, output_bps=16,
                             use_camera_wb=True, user_flip=0)
     img = rgb.astype(np.float32) / 65535.0
@@ -116,6 +150,8 @@ def load(f):
             img *= GAIN[..., None]
     if UNDIST is not None:
         img = cv2.remap(img, UNDIST[0], UNDIST[1], cv2.INTER_LINEAR, borderValue=(-1, -1, -1))
+    if FG is not None:
+        img[FG] = -1                                    # foreground: no data, so it never enters the stack
     return img
 
 
@@ -214,6 +250,38 @@ if (os.path.getmtime(files[-1]) - os.path.getmtime(files[0])) > 120 or len(files
     if len(static):
         STATIC = cKDTree(static)
     print("%s %d static (foreground) points excluded from alignment" % (el(), len(static)), flush=True)
+if not a.no_foreground_mask and len(files) >= 20:
+    # Railings and walls are fixed on the sensor while the stars move, so in the median of
+    # frames spread over the run the stars vanish and the foreground stays. Mark 32-px tiles
+    # whose level departs from a smooth sky fit, or that are textured, then grow the mask.
+    idx = np.linspace(0, len(files) - 1, 25).astype(int)
+    med = np.median([load(files[k])[..., 1] for k in idx], axis=0)
+    t = 32; Hh, Ww = med.shape; th, tw = Hh // t, Ww // t
+    tiles = med[:th * t, :tw * t].reshape(th, t, tw, t).transpose(0, 2, 1, 3).reshape(th, tw, -1)
+    valid_t = (tiles > -0.5).mean(2) > 0.5
+    lev = np.where(valid_t, np.median(np.where(tiles > -0.5, tiles, np.nan), axis=2), np.nan)
+    hp = med - cv2.GaussianBlur(np.where(med > -0.5, med, 0).astype(np.float32), (0, 0), 3)
+    tex = np.nanstd(np.where(tiles > -0.5, hp[:th * t, :tw * t].reshape(th, t, tw, t).transpose(0, 2, 1, 3).reshape(th, tw, -1), np.nan), axis=2)
+    yy, xx = np.mgrid[0:th, 0:tw] / np.array([th, tw])[:, None, None]
+    A_ = np.stack([np.ones_like(xx), xx, yy, xx * xx, yy * yy, xx * yy], -1).reshape(-1, 6)
+    good = valid_t.ravel() & np.isfinite(lev.ravel())
+    for _ in range(5):                                  # robust quadratic sky fit
+        c, *_ = np.linalg.lstsq(A_[good], lev.ravel()[good], rcond=None)
+        fit = (A_ @ c).reshape(th, tw)
+        rel = np.abs(lev / fit - 1)
+        good = good & (rel.ravel() < 0.25) & (tex.ravel() < 3 * np.nanmedian(tex))
+    full_t = (tiles > -0.5).all(2)                       # tiles cut by the undistortion border are not foreground
+    fg_t = full_t & ((rel > 0.25) | (tex > 3 * np.nanmedian(tex)))
+    fg = cv2.resize(fg_t.astype(np.uint8), (tw * t, th * t), interpolation=cv2.INTER_NEAREST)
+    fg = cv2.copyMakeBorder(fg, 0, Hh - th * t, 0, Ww - tw * t, cv2.BORDER_REPLICATE)
+    fg = cv2.dilate(cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((65, 65), np.uint8)), np.ones((49, 49), np.uint8))
+    FG = fg.astype(bool)
+    print("%s foreground mask: %.1f%% of the frame (median of %d unaligned frames)" % (el(), 100 * FG.mean(), len(idx)), flush=True)
+    m8 = np.clip(np.where(med > -0.5, med, 0) / max(np.percentile(med, 99.5), 1e-6), 0, 1) ** 0.5 * 255
+    vis = cv2.cvtColor(m8.astype(np.uint8), cv2.COLOR_GRAY2BGR); vis[FG] = (0.5 * vis[FG] + [0, 0, 120]).astype(np.uint8)
+    cv2.imwrite(a.out + "_fgmask.jpg", cv2.rotate(vis, cv2.ROTATE_90_CLOCKWISE))
+    if a.mask_only:
+        raise SystemExit(0)
 ref = load(files[ref_i]); H, W = ref.shape[:2]
 T_REF = frame_time(files[ref_i]) if a.solution else None
 ref_pts = stars(ref); tree = cKDTree(ref_pts); ref_map = starmap(ref_pts, (H, W))
