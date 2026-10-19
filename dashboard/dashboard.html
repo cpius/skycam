@@ -1,0 +1,490 @@
+<!-- Served by dashboard.py. Talks only to its own origin: /api/state, /preview.jpg, /ql, /img.
+     The phone's token never reaches the browser. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SkyCam</title>
+<style>
+:root{
+  --bg:#0b0e13; --panel:#141922; --panel2:#1b212c; --line:#26303f;
+  --ink:#dfe6f0; --dim:#8896aa; --faint:#5b6779;
+  --ok:#5ad48b; --warn:#f0b849; --bad:#ef6b6b; --live:#4ea8ff;
+  --frame:#9ece6a; --sequence:#7aa2f7; --note:#e0af68; --error:#ef6b6b;
+  --log:#c0caf5; --heartbeat:#8896aa; --dashboard:#7dcfff; --focus:#bb9af7;
+}
+/* Night mode: red on black, to keep dark adaptation on the balcony. */
+html.night{ --bg:#000; --panel:#0d0403; --panel2:#150705; --line:#3a1410;
+  --ink:#ff8a70; --dim:#b4503c; --faint:#7a3527;
+  --ok:#ff7a55; --warn:#ff9a6a; --bad:#ff5a48; --live:#ff8a70;
+  --frame:#ff8a70; --sequence:#ff8a70; --note:#ff9a6a; --error:#ff5a48;
+  --log:#ff8a70; --heartbeat:#b4503c; --dashboard:#ff8a70; --focus:#ff8a70; }
+html.night img{ filter:grayscale(1) sepia(1) hue-rotate(-25deg) saturate(5) brightness(.75); }
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+h2{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+  margin:0;font-weight:600}
+a{color:var(--live)}
+
+header{position:sticky;top:0;z-index:20;background:var(--panel);
+  border-bottom:1px solid var(--line);padding:9px 14px;
+  display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap}
+.brand{font-weight:700;letter-spacing:.1em}
+.spacer{flex:1}
+button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);
+  border-radius:5px;padding:4px 9px;font:inherit;font-size:11px;cursor:pointer}
+button:hover{border-color:var(--dim)}
+button.on{border-color:var(--live);color:var(--live)}
+
+.grid{display:grid;gap:12px;padding:12px;
+  grid-template-columns:repeat(auto-fit,minmax(min(370px,100%),1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+  padding:12px;min-width:0}
+.card.wide{grid-column:1/-1}
+.head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}
+.head .sub{color:var(--faint);font-size:11px;margin-left:auto;text-align:right}
+
+/* --- generic bits --- */
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12px}
+.kv dt{color:var(--dim)} .kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.chip{display:inline-block;padding:0 6px;border-radius:4px;font-size:10px;
+  letter-spacing:.06em;text-transform:uppercase;border:1px solid currentColor;white-space:nowrap}
+.ok{color:var(--ok)} .stale{color:var(--warn)} .dead{color:var(--bad)}
+.empty{color:var(--faint);padding:18px 0;text-align:center;font-style:italic}
+.scroll{max-height:340px;overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th{position:sticky;top:0;background:var(--panel);color:var(--faint);
+  text-align:left;font-weight:500;padding:3px 6px;border-bottom:1px solid var(--line);
+  white-space:nowrap}
+td{padding:2px 6px;border-bottom:1px solid #ffffff08;vertical-align:top}
+tr:hover td{background:#ffffff06}
+.mono-dim{color:var(--faint)}
+.trunc{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  display:inline-block;vertical-align:bottom}
+
+/* --- phone --- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:9px;margin-bottom:10px}
+.tiles div{background:var(--panel2);border-radius:6px;padding:7px 9px;min-width:0}
+.tiles b{display:block;font-size:19px;font-weight:700;line-height:1.2;white-space:nowrap}
+.tiles span{color:var(--faint);font-size:10px;text-transform:uppercase;letter-spacing:.07em}
+.tiles small{display:block;color:var(--faint);font-size:10px;line-height:1.3}
+.bar{height:8px;background:var(--panel2);border-radius:4px;overflow:hidden;margin:4px 0 2px}
+.bar i{display:block;height:100%;background:var(--sequence)}
+.seq{border:1px solid var(--line);border-radius:7px;padding:8px 10px;margin-bottom:10px}
+
+/* --- preview --- */
+.pv{position:relative;background:#000;border-radius:6px;border:1px solid var(--line);
+  overflow:hidden;display:flex;justify-content:center}
+.pv img{display:block;max-width:100%;max-height:72vh;object-fit:contain}
+.pv .stamp{position:absolute;left:0;right:0;bottom:0;padding:3px 7px;background:#000a;
+  font-size:10.5px;display:flex;justify-content:space-between}
+
+/* --- focus --- */
+.runs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
+
+/* --- frames --- */
+.frames{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.fr{margin:0;min-width:0}
+.fr .ph{aspect-ratio:3/4;background:#000;border:1px solid var(--line);border-radius:5px;
+  overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--faint);
+  font-size:10.5px;text-align:center;padding:6px}
+.fr .ph img{width:100%;height:100%;object-fit:cover;display:block}
+.fr.warn .ph{border-color:var(--warn)} .fr.err .ph{border-color:var(--bad)}
+.fr figcaption{font-size:10.5px;margin-top:3px;line-height:1.35}
+.fr figcaption b{color:var(--ink)}
+
+/* --- messages --- */
+.devtabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
+.devtabs button{display:flex;gap:5px;align-items:center}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto}
+.ev{border-left:2px solid var(--line);padding:1px 0 1px 8px;margin-bottom:1px;overflow-wrap:anywhere}
+.ev .n{font-weight:600}
+.ev .d{color:var(--dim)}
+.ev.alarm .d{color:var(--bad)}
+.ev.noisy{opacity:.55}
+@media (max-width:520px){ .grid{padding:8px 16px;gap:10px} header{padding:8px 16px} }
+</style>
+
+<header>
+  <span class="brand">SKYCAM</span>
+  <span id="status"></span>
+  <span class="spacer"></span>
+  <button id="noisy">heartbeat chatter</button>
+  <button id="night">night mode</button>
+  <button id="pause">pause</button>
+  <span id="clock" class="mono-dim"></span>
+</header>
+
+<div class="grid" id="grid">
+  <section class="card" id="c-phone">
+    <div class="head"><h2>Phone</h2><span class="sub" id="phone-sub"></span></div>
+    <div id="phone"></div>
+  </section>
+
+  <section class="card" id="c-preview">
+    <div class="head"><h2>Live view</h2><span class="sub" id="preview-sub"></span></div>
+    <div class="pv"><a id="pv-link" href="/preview.jpg" target="_blank" rel="noopener"><img id="pv-img" alt="live view"></a>
+      <div class="stamp"><span id="pv-t"></span><span id="pv-err" style="color:var(--bad)"></span></div></div>
+  </section>
+
+  <section class="card" id="c-focus">
+    <div class="head"><h2>Focus</h2><span class="sub" id="focus-sub"></span></div>
+    <div id="focus"></div>
+  </section>
+
+  <section class="card wide" id="c-frames">
+    <div class="head"><h2>Frames</h2><span class="sub" id="frames-sub"></span></div>
+    <div id="frames"></div>
+  </section>
+
+  <section class="card wide" id="c-cmd">
+    <div class="head"><h2>Commands to the phone</h2><span class="sub" id="cmd-sub"></span></div>
+    <div class="scroll" id="cmd"></div>
+  </section>
+
+  <section class="card wide" id="c-fb">
+    <div class="head"><h2>Messages from the phone</h2><span class="sub" id="fb-sub"></span></div>
+    <div id="fb"></div>
+  </section>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const num = (v, d = 0, dash = '—') =>
+  (v === null || v === undefined || Number.isNaN(+v)) ? dash : Number(v).toFixed(d);
+// Phone times are UTC ("...Z"); show them on the Mac's clock.
+const hms = t => { if (!t) return ''; const d = new Date(t);
+  return isNaN(d) ? String(t).slice(11, 19) : d.toTimeString().slice(0, 8); };
+const ago = s => s == null ? '—' : s < 90 ? `${num(s)}s` : s < 5400 ? `${num(s/60)} min` : `${num(s/3600,1)} h`;
+// 0.999773 s is "1 s": the sensor reports the exposure it really used, a hair under the request.
+const exp = s => s == null ? '—' : s >= 0.3
+  ? `${num(s, Math.abs(s - Math.round(s)) < 0.01 ? 0 : 2)} s` : `1/${num(1 / s)}`;
+const fname = p => String(p || '').split('/').pop();
+// Re-render without losing the reader's place in a scrolled list.
+function setHTML(sel, html) {
+  const el = $(sel), sc = () => [el, ...el.querySelectorAll('.scroll')].filter(e => e.classList.contains('scroll'));
+  const tops = sc().map(e => e.scrollTop);
+  el.innerHTML = html;
+  sc().forEach((e, i) => { if (tops[i]) e.scrollTop = tops[i]; });
+}
+
+let STATE = null, paused = false, showNoisy = false, tab = 'all', focusPick = null;
+
+/* ---------------- phone ---------------- */
+function phonePane(s) {
+  const st = s.status, hb = s.heartbeat || {};
+  if (!st && !s.heartbeat) return `<p class="empty">no answer from ${esc(s.phone)} yet${
+    s.link.status_err ? ' — ' + esc(s.link.status_err) : ''}</p>`;
+  const pw = st?.power || {}, cam = st?.camera || {}, sto = st?.storage || {};
+  const seq = st?.sequence || hb.sequence || {};
+  const bat = (pw.battery ?? hb.battery ?? -1) * 100;
+  const batCls = bat < 0 ? '' : bat < 15 ? 'dead' : bat < 30 ? 'stale' : '';
+  const thermal = pw.thermal ?? hb.thermal;
+  const thCls = {serious:'stale', critical:'dead'}[thermal] || '';
+  const free = sto.free_bytes ?? hb.free_bytes;
+  const b = s.battery || {};
+  const lp = cam.lens_position ?? hb.lens_position;
+  let h = `<div class="tiles">
+    <div><span>battery</span><b class="${batCls}">${bat < 0 ? '—' : num(bat) + '%'}</b>
+      <small>${pw.charging ? 'charging' : b.eta_h != null ? `~${num(b.eta_h,1)} h left`
+        : b.rate_pct_h != null ? `${num(b.rate_pct_h,1)} %/h` : 'rate after 15 min'}</small></div>
+    <div><span>thermal</span><b class="${thCls}">${esc(thermal || '—')}</b>
+      <small>${st ? 'up ' + ago(st.app?.uptime_s) : ''}</small></div>
+    <div><span>free</span><b>${free == null ? '—' : num(free/1e9,1) + ' GB'}</b>
+      <small>${free == null ? '' : '≈' + num(free/10.1e6/1000,1) + 'k DNGs'}${
+        sto.files != null ? ` · ${sto.files} on phone` : ''}</small></div>
+    <div><span>lens</span><b style="color:var(--focus)">${num(lp,3)}</b>
+      <small>${esc(cam.focus_mode || '')}${cam.adjusting_focus ? ' · <span class="stale">moving</span>' : ''}</small></div>
+    <div><span>exposure</span><b>${exp(cam.exposure_s ?? hb.exposure_s)}</b>
+      <small>${esc(cam.exposure_mode || '')}</small></div>
+    <div><span>ISO</span><b>${num(cam.iso ?? hb.iso)}</b>
+      <small>${cam.limits ? `max ${num(cam.limits.iso_max)}` : ''}</small></div>
+    <div><span>WB</span><b>${cam.wb_temp ? num(cam.wb_temp) + 'K' : '—'}</b>
+      <small>${esc(cam.wb_mode || '')}${cam.wb_tint != null ? ' · tint ' + num(cam.wb_tint,1) : ''}</small></div>
+    <div><span>stale discards</span><b class="${cam.stale_discards ? 'stale' : ''}">${cam.stale_discards ?? '—'}</b>
+      <small>preview ${cam.preview_age_s != null ? num(cam.preview_age_s,1) + 's old' : '—'}</small></div>
+  </div>`;
+  h += seqBlock(seq, st?.sequence);
+  h += batteryChart(b.series || []);
+  h += `<div class="kv" style="margin-top:8px">
+    <dt>camera</dt><dd>${cam.ready === false ? '<span class="dead">not running</span> ' + esc(cam.error || '')
+      : esc(cam.camera || '—') + (cam.raw ? ` · RAW ${esc(cam.raw)}` : '')}</dd>
+    <dt>app</dt><dd>${esc(st?.app?.version || '—')} · ${esc(st?.app?.device || '')} · ${
+      st?.app?.event_clients ?? '—'} event client(s)</dd>
+  </div>`;
+  return h;
+}
+
+function seqBlock(seq, full) {
+  if (!seq || !seq.state || seq.state === 'idle') return `<div class="seq mono-dim">no sequence has run since the app started</div>`;
+  const pct = seq.total ? 100 * (seq.index || 0) / seq.total : 0;
+  const col = {running:'var(--sequence)', done:'var(--ok)', stopped:'var(--warn)', stopping:'var(--warn)'}[seq.state] || 'var(--dim)';
+  let eta = '';
+  if (seq.state === 'running' && full?.started && seq.index) {
+    const el = (Date.now() - new Date(full.started)) / 1000;
+    eta = ` · ${ago(el)} in, ~${ago(el / seq.index * (seq.total - seq.index))} to go`;
+  }
+  const p = full?.program || {}, fb = p.focus_bracket;
+  const what = fb ? `focus ${fb.from}→${fb.to} step ${fb.step}${p.per_value > 1 ? ` ×${p.per_value}` : ''}`
+    : p.count ? `${p.count} frames` : '';
+  return `<div class="seq">
+    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+      <span class="chip" style="color:${col}">${esc(seq.state)}</span>
+      <b>${esc(full?.id || '')}</b><span class="mono-dim">${esc(what)}</span>
+      <span style="margin-left:auto">${seq.index ?? 0}/${seq.total ?? 0}</span></div>
+    <div class="bar"><i style="width:${pct}%;background:${col}"></i></div>
+    <div class="mono-dim" style="font-size:11px">${full ? `${full.files ?? 0} files · ${full.errors ?? 0} errors` : ''}${eta}${
+      p.exposure != null ? ` · ${exp(p.exposure)} ISO ${p.iso ?? 'auto'}` : ''}${
+      full?.last_error ? ` · <span class="dead">${esc(full.last_error)}</span>` : ''}</div>
+  </div>`;
+}
+
+function batteryChart(series) {
+  if (series.length < 2) return '';
+  const W = 560, H = 60, L = 30;
+  const t0 = series[0][0], t1 = series[series.length - 1][0];
+  const lo = Math.max(0, Math.min(...series.map(p => p[1])) - 5), hi = Math.min(100, Math.max(...series.map(p => p[1])) + 5);
+  const X = t => L + (t - t0) / Math.max(1, t1 - t0) * (W - L - 6);
+  const Y = v => H - 12 - (v - lo) / Math.max(1, hi - lo) * (H - 20);
+  const pts = series.map(p => `${X(p[0])},${Y(p[1])}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+    <text x="0" y="${Y(hi)+4}" fill="var(--faint)" font-size="9">${num(hi)}%</text>
+    <text x="0" y="${Y(lo)+2}" fill="var(--faint)" font-size="9">${num(lo)}%</text>
+    <text x="${L}" y="${H-1}" fill="var(--faint)" font-size="9">${hms(t0*1000).slice(0,5)}</text>
+    <text x="${W-6}" y="${H-1}" fill="var(--faint)" font-size="9" text-anchor="end">battery · ${hms(t1*1000).slice(0,5)}</text>
+    <polyline points="${pts}" fill="none" stroke="var(--ok)" stroke-width="1.5"/>
+  </svg>`;
+}
+
+/* ---------------- preview ---------------- */
+// Swapped in only once the next frame has loaded, so the image never blanks between frames.
+// The frame's age comes from /api/state (preview_age_s): the server shares one fetch among
+// every open page, so the age is the server's, not this page's.
+let pvBusy = false, pvAge = null, pvAgeAt = 0, pvErr = '';
+function refreshPreview() {
+  if (paused || pvBusy || document.hidden) return;
+  pvBusy = true;
+  const im = new Image();
+  im.onload = () => { $('#pv-img').src = im.src; pvBusy = false; };
+  im.onerror = () => { pvBusy = false; };
+  im.src = '/preview.jpg?t=' + Date.now();
+}
+setInterval(() => {
+  const age = pvAge == null ? null : pvAge + (Date.now() - pvAgeAt) / 1000;
+  $('#pv-t').textContent = age == null ? '' : `live view ${ago(age)} old`;
+  $('#pv-err').textContent = pvErr ? 'phone: ' + pvErr : '';
+}, 1000);
+
+/* ---------------- focus ---------------- */
+function focusPane(f) {
+  if (!f) return '<p class="empty">no focus data</p>';
+  let h = '';
+  const lb = f.live_bracket;
+  if (lb && lb.state === 'running') {
+    h += `<div class="seq"><span class="chip" style="color:var(--sequence)">bracket running</span>
+      <b>${esc(lb.id)}</b> ${lb.index}/${lb.total} · ${lb.bracket.from}→${lb.bracket.to} step ${lb.bracket.step}
+      ${lb.dir ? `<div class="mono-dim" style="font-size:11px;margin-top:4px">then:
+        <code>~/ASICAP/.venv/bin/python3 -u client/focustrack.py --dir ${esc(lb.dir)} | tee ${esc(lb.dir)}/track.txt</code></div>` : ''}</div>`;
+  }
+  if (f.runs.length > 1) {
+    const cur = f.current?.path;
+    h += `<div class="runs">${f.runs.map(r => `<button data-run="${esc(r.path)}"
+      class="${r.path === cur ? 'on' : ''}" title="${esc(r.path)}">${esc(r.name)}</button>`).join('')}</div>`;
+  }
+  const c = f.current;
+  if (!c) return h + '<p class="empty">no track.txt / focus.txt under --frames yet</p>';
+  h += vcurve(c);
+  h += `<div class="kv" style="margin:8px 0">
+    <dt>best</dt><dd>${c.best ? `<b style="color:var(--ok)">${num(c.best.lens,4)}</b> @ HFR ${num(c.best.hfr,2)} px`
+      : '—'}${c.vertex ? ` &nbsp;<span class="mono-dim">parabola vertex ${num(c.vertex,4)}</span>` : ''}</dd>
+    <dt>tool</dt><dd>${esc(c.tool)} · ${c.curve.length} lens positions · ${c.frames.length} frames${
+      c.reference ? ` · ${c.reference.stars} stars tracked` : ''}</dd>
+    <dt>dir</dt><dd class="mono-dim">${esc(c.dir)} · ${c.dngs} DNGs · ${hms(c.mtime)}</dd>
+    ${c.montage ? `<dt>stars</dt><dd><a href="/img?p=${encodeURIComponent(c.montage)}" target="_blank" rel="noopener">${esc(fname(c.montage))}</a></dd>` : ''}
+  </div>`;
+  return h;
+}
+
+function vcurve(c) {
+  const pts = c.curve.filter(p => p.hfr != null);
+  if (pts.length < 2) return '<p class="empty">not enough lens positions to plot</p>';
+  const W = 560, H = 190, L = 40, B = 26;
+  const all = pts.concat(c.frames);
+  const xs = all.map(p => p.lens), ys = all.map(p => p.hfr);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(0, Math.min(...ys)), y1 = Math.max(...ys) * 1.06;
+  const X = v => L + (v - x0) / Math.max(1e-9, x1 - x0) * (W - L - 12);
+  const Y = v => H - B - (v - y0) / Math.max(1e-9, y1 - y0) * (H - B - 14);
+  const line = pts.map(p => `${X(p.lens)},${Y(p.hfr)}`).join(' ');
+  const dots = c.frames.map(p => `<circle cx="${X(p.lens)}" cy="${Y(p.hfr)}" r="1.8" fill="var(--dim)" opacity=".7"/>`).join('');
+  const mark = (v, col, label, yy) => v != null && v >= x0 && v <= x1
+    ? `<line x1="${X(v)}" x2="${X(v)}" y1="10" y2="${H-B}" stroke="${col}" stroke-dasharray="3 3"/>
+       <text x="${X(v)+4}" y="${yy}" fill="${col}" font-size="10">${label}</text>` : '';
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+    <line x1="${L}" x2="${W-12}" y1="${H-B}" y2="${H-B}" stroke="var(--line)"/>
+    <line x1="${L}" x2="${L}" y1="10" y2="${H-B}" stroke="var(--line)"/>
+    <text x="2" y="16" fill="var(--faint)" font-size="9">${num(y1,1)}px</text>
+    <text x="2" y="${H-B}" fill="var(--faint)" font-size="9">${num(y0,1)}</text>
+    <text x="${L}" y="${H-8}" fill="var(--faint)" font-size="9">${num(x0,3)}</text>
+    <text x="${W-12}" y="${H-8}" fill="var(--faint)" font-size="9" text-anchor="end">${num(x1,3)} lens · HFR (2×2 px)</text>
+    ${mark(c.best?.lens, 'var(--ok)', 'best ' + num(c.best?.lens,4), 20)}
+    ${c.vertex && Math.abs(c.vertex - (c.best?.lens ?? -1)) > 1e-4 ? mark(c.vertex, 'var(--warn)', 'vertex ' + num(c.vertex,4), 34) : ''}
+    ${dots}
+    <polyline points="${line}" fill="none" stroke="var(--focus)" stroke-width="1.6"/>
+    ${pts.map(p => `<circle cx="${X(p.lens)}" cy="${Y(p.hfr)}" r="2.8" fill="var(--focus)"><title>${p.lens} HFR ${p.hfr}${p.fwhm ? ' FWHM ' + p.fwhm : ''}${p.stars ? ' · ' + p.stars + ' stars' : ''}</title></circle>`).join('')}
+  </svg>`;
+}
+
+/* ---------------- frames ---------------- */
+let frKey = '';
+function framesPane(s) {
+  const fr = s.frames || [];
+  if (!fr.length) { frKey = ''; return '<p class="empty">no frames yet — from frame events or DNGs under --frames</p>'; }
+  // Rebuild only when the list changes: a rebuild every poll would re-request every thumbnail.
+  const key = fr.map(f => f.name + (f.path ? '+' : '')).join('|') + s.quicklook;
+  if (key === frKey) return null;
+  frKey = key;
+  return `<div class="frames">${fr.map(f => {
+    const sc = f.sidecar || {};
+    const moving = sc.adjusting_focus === true;
+    const cls = f.error ? 'err' : moving ? 'warn' : '';
+    const ql = p => `/ql?p=${encodeURIComponent(f.path)}&w=${p}`;
+    const pic = f.path && s.quicklook
+      ? `<a href="${ql(1400)}" target="_blank" rel="noopener"><img src="${ql(320)}" loading="lazy" alt="${esc(f.name)}"></a>`
+      : f.path ? 'on the Mac — no rawpy for a quick-look'
+      : 'on the phone only<br>(not downloaded yet, or deleted)';
+    return `<figure class="fr ${cls}"><div class="ph">${pic}</div>
+      <figcaption><b>${hms(f.t)}</b> ${f.index != null ? `#${f.index}${f.total ? '/' + f.total : ''}` : ''}
+        ${moving ? '<span class="chip stale" title="sidecar: adjusting_focus">lens moving</span>' : ''}
+        ${f.error ? `<span class="chip dead">${esc(f.error)}</span>` : ''}<br>
+        <span style="color:var(--focus)">${num(f.lens_position,4)}</span> · ${exp(f.exposure_s)} · ISO ${num(f.iso)}${
+          sc.wb_temp ? ` · ${num(sc.wb_temp)}K` : ''}<br>
+        <span class="mono-dim trunc" title="${esc(f.path || f.name)}">${esc(f.tag || f.seq || f.name)}</span></figcaption>
+    </figure>`; }).join('')}</div>`;
+}
+
+/* ---------------- commands ---------------- */
+function cmdPane(rows) {
+  if (!rows.length) return '<p class="empty">no requests logged by the phone yet</p>';
+  const col = {GET:'var(--dim)', POST:'var(--live)', DELETE:'var(--warn)'};
+  return `<table><thead><tr><th>time</th><th>#</th><th>method</th><th>path</th></tr></thead><tbody>
+    ${rows.slice().reverse().map(r => `<tr>
+      <td class="mono-dim">${hms(r.t)}</td><td class="mono-dim">${r.id ?? ''}</td>
+      <td style="color:${col[r.method] || 'var(--ink)'}">${esc(r.method)}</td>
+      <td><span class="trunc">${esc(r.path)}</span></td></tr>`).join('')}</tbody></table>`;
+}
+
+/* ---------------- messages ---------------- */
+const ALARM = /fail|error|background|cannot|timed out|not run|denied|crash/i;
+function fbPane(s) {
+  const ev = s.events || {}, kinds = (s.kinds || []).filter(k => ev[k]);
+  if (!kinds.length) return '<p class="empty">no messages from the phone yet</p>';
+  if (tab !== 'all' && !ev[tab]) tab = 'all';
+  const allRows = kinds.flatMap(k => ev[k].map(e => ({...e, _k: k})))
+    .sort((a, b) => (a.id ?? 0) - (b.id ?? 0) || String(a.t).localeCompare(String(b.t)));
+  const tabs = ['all', ...kinds].map(k => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}"
+      style="color:var(--${k === 'all' ? 'ink' : k})"><span class="dot"></span>${k}
+      <span class="mono-dim">${k === 'all' ? '' : s.event_counts[k]}</span></button>`).join('');
+  let rows = tab === 'all' ? allRows : ev[tab].map(e => ({...e, _k: tab}));
+  const hidden = tab === 'all' && !showNoisy ? rows.filter(e => e._k === 'heartbeat').length : 0;
+  if (hidden) rows = rows.filter(e => e._k !== 'heartbeat');
+  rows = rows.slice(-300).reverse();
+  const body = rows.length ? rows.map(e => {
+      const d = fmtEvent(e);
+      return `<div class="ev ${e._k === 'heartbeat' ? 'noisy' : ''} ${e._k === 'error' || ALARM.test(d) && e._k !== 'heartbeat' ? 'alarm' : ''}"
+        style="border-left-color:var(--${e._k})">
+        <span class="mono-dim">${hms(e.t)}</span>
+        <span class="n" style="color:var(--${e._k})">${esc(e.type)}</span>
+        <span class="d">${esc(d)}</span></div>`; }).join('')
+    : '<p class="empty">nothing here</p>';
+  return `<div class="devtabs">${tabs}</div>
+    ${hidden ? `<p class="mono-dim" style="margin:0 0 6px">${hidden} heartbeat${hidden > 1 ? 's' : ''} hidden — “heartbeat chatter” or the heartbeat tab shows them</p>` : ''}
+    <div class="scroll">${body}</div>`;
+}
+
+function fmtEvent(e) {
+  if (e.type === 'log' || e.type === 'dashboard') return e.message ?? '';
+  if (e.type === 'heartbeat') {
+    const q = e.sequence || {};
+    return `battery ${num((e.battery ?? -1) * 100)}%  ${e.thermal}  free ${num((e.free_bytes || 0)/1e9,1)} GB  `
+      + `lens ${num(e.lens_position,3)}  ${exp(e.exposure_s)}  ISO ${num(e.iso)}  seq ${q.state} ${q.index}/${q.total}`;
+  }
+  if (e.type === 'frame')
+    return `${e.index ?? ''}/${e.total ?? ''}  lens ${num(e.lens_position,4)}  ${exp(e.exposure_s)}  ISO ${num(e.iso)}`
+      + `${e.tag ? '  ' + e.tag : ''}  ${(e.files || []).filter(f => !f.endsWith('.json')).join(', ')}${e.error ? '  ERROR ' + e.error : ''}`;
+  return Object.entries(e).filter(([k]) => !['type','t','id','_k'].includes(k)).map(([k, v]) =>
+    `${k}=${typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(3)) : typeof v === 'string' ? v : JSON.stringify(v)}`
+  ).join('  ').slice(0, 300);
+}
+
+/* ---------------- shell ---------------- */
+function render(s) {
+  STATE = s;
+  const L = s.link || {};
+  const hbAge = L.heartbeat_age_s;
+  let cls, label;
+  if (!L.status_ok && !L.sse_connected) { cls = 'dead'; label = `phone not answering${L.status_err ? ' — ' + L.status_err : ''}`; }
+  else if (!L.sse_connected) { cls = 'stale'; label = `status ok · event stream down (${L.sse_err || 'connecting'})`; }
+  else if (hbAge == null || hbAge > 20) { cls = 'stale'; label = `events connected · no heartbeat for ${ago(hbAge)}`; }
+  else { cls = 'ok'; label = `live · heartbeat ${num(hbAge)}s ago`; }
+  $('#status').innerHTML = `<span class="chip ${cls}">${esc(label)}</span>`;
+
+  $('#phone').innerHTML = phonePane(s);
+  pvAge = s.preview?.age_s ?? null; pvAgeAt = Date.now(); pvErr = s.preview?.error || '';
+  $('#phone-sub').textContent = `${s.phone.replace('http://', '')} · status ${ago(L.status_age_s)} ago`;
+
+  $('#focus').innerHTML = focusPane(s.focus);
+  $('#focus-sub').textContent = s.focus?.current ? `${s.focus.current.name} · ${hms(s.focus.current.mtime)}` : '';
+  document.querySelectorAll('#focus .runs button').forEach(b =>
+    b.onclick = () => { focusPick = b.dataset.run; poll(true); });
+
+  const fr = framesPane(s);
+  if (fr !== null) $('#frames').innerHTML = fr;
+  const nLocal = (s.frames || []).filter(f => f.path).length;
+  $('#frames-sub').textContent = `${(s.frames || []).length} newest · ${nLocal} on the Mac`
+    + (s.quicklook ? ' · click for a 1400 px quick-look' : '');
+
+  setHTML('#cmd', cmdPane(s.commands || []));
+  $('#cmd-sub').textContent = `${(s.commands || []).length} shown · every request the phone logged (not /status, /events, /preview)`;
+
+  setHTML('#fb', fbPane(s));
+  const tot = Object.values(s.event_counts || {}).reduce((a, b) => a + b, 0) - (s.event_counts?.requests || 0);
+  $('#fb-sub').textContent = `${tot} events · last #${L.last_id}${L.reconnects > 1 ? ` · ${L.reconnects - 1} reconnects` : ''}`;
+  document.querySelectorAll('#fb .devtabs button').forEach(b =>
+    b.onclick = () => { tab = b.dataset.tab; render(STATE); });
+}
+
+async function poll(force) {
+  $('#clock').textContent = new Date().toTimeString().slice(0, 8);
+  if (paused && !force) return;
+  try {
+    const r = await fetch('/api/state' + (focusPick ? '?focus=' + encodeURIComponent(focusPick) : ''), {cache: 'no-store'});
+    render(await r.json());
+  } catch (e) {
+    $('#status').innerHTML = '<span class="chip dead">dashboard cannot reach its own server</span>';
+  }
+}
+
+$('#night').onclick = e => {
+  document.documentElement.classList.toggle('night');
+  e.target.classList.toggle('on', document.documentElement.classList.contains('night'));
+  try { localStorage.night = document.documentElement.classList.contains('night') ? '1' : ''; } catch (_) {}
+};
+$('#noisy').onclick = e => {
+  showNoisy = !showNoisy; e.target.classList.toggle('on', showNoisy);
+  if (STATE) render(STATE);
+};
+$('#pause').onclick = e => {
+  paused = !paused; e.target.classList.toggle('on', paused);
+  e.target.textContent = paused ? 'paused' : 'pause';
+};
+try { if (localStorage.night) $('#night').click(); } catch (_) {}
+
+poll();
+refreshPreview();
+setInterval(poll, 3000);
+setInterval(refreshPreview, 3000);
+setInterval(() => $('#clock').textContent = new Date().toTimeString().slice(0, 8), 1000);
+</script>
