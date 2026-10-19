@@ -35,6 +35,27 @@ The first time, you need to do four things on the phone itself:
     python3 -u client/skycam.py preview --out preview.jpg
     python3 -u client/skycam.py events
 
+## Dashboard
+
+A page to follow a session live, from the Mac or from a phone on the balcony:
+
+    python3 -u dashboard/dashboard.py --port 8768                    # http://localhost:8768
+    python3 -u dashboard/dashboard.py --port 8768 --bind 0.0.0.0     # also reachable from other devices on the LAN
+
+It shows the phone (battery and time left, thermal, free space, lens position, exposure, ISO, WB,
+`stale_discards`, sequence progress), the live view, the newest `focustrack.py` / `focusraw.py`
+V-curve under `--frames` (default: the repo; looks for `track.txt` / `focus.txt` written with
+`| tee`), the newest frames with a quick-look rendered from each DNG already on the Mac, every
+request the phone logged, and every event split by type. A heartbeat line goes to the terminal
+every 15 s.
+
+It is **read-only**: it sends GET requests only (`/status`, `/events`, `/events/poll`,
+`/preview.jpg`), so it can run beside a sequence another client is driving. It does not poll
+`/files`, because the phone logs every such request as an event. Connection details come from
+`~/.config/skycam.json`; the token stays on the Mac. Events are also appended to
+`dashboard/data/events-YYYY-MM-DD.jsonl`. Quick-looks need rawpy: when the interpreter running the
+dashboard lacks it, they are rendered with `~/ASICAP/.venv/bin/python3`.
+
 ## HTTP API
 
 All routes except `GET /ping` need `Authorization: Bearer <token>`. The token is on the phone screen
