@@ -56,6 +56,25 @@ It is **read-only**: it sends GET requests only (`/status`, `/events`, `/events/
 `dashboard/data/events-YYYY-MM-DD.jsonl`. Quick-looks need rawpy: when the interpreter running the
 dashboard lacks it, they are rendered with `~/ASICAP/.venv/bin/python3`.
 
+## Processing on the Mac
+
+Needs `~/ASICAP/.venv` (numpy, OpenCV, SciPy, rawpy) and `exiftool`.
+
+| Script | Does |
+|---|---|
+| `client/focustrack.py` | V-curve of the same stars across a focus bracket (best lens position) |
+| `client/dngstack.py` | Dark- and flat-calibrated, foreground-masked, star-registered stack of DNGs (see its docstring) |
+| `client/phonesolve.py` | Blind plate solve of a stack (known scale, star pairs vs Yale BSC); pointing in alt/az and where `--target` (default M31) sits |
+| `catalog/bsc_v6.csv` | Yale Bright Star Catalogue, V < 6 (VizieR V/50, 5023 stars) |
+
+Measured on the iPhone Air (2026-10-19): star focus at **lens position 0.867–0.871** (sharp
+0.84–0.89; NightCap's "infinity" was badly out); focal length 1511 px at half size, k1 ≈ +0.038.
+M31 from a Copenhagen balcony: 1290 × 1 s at ISO 3200 (M33, the Pleiades, the Double Cluster and M34
+are in the same field): `dngstack.py --solution --flats --self-dark 800`, then Siril
+`subsky -rbf -samples=60 -tolerance=5.0 -smooth=0.1` (the default tolerance leaves a pink horizon
+band), BXT 0.50/0.90, `autostretch -linked -2.8 0.10`, NXT 0.90. The diagonal streaks of the first
+stacks were the sensor's fixed bias pattern: 30 darks were too few, and `--self-dark` removes it.
+
 ## HTTP API
 
 All routes except `GET /ping` need `Authorization: Bearer <token>`. The token is on the phone screen
