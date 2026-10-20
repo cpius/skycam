@@ -69,9 +69,11 @@ Needs `~/ASICAP/.venv` (numpy, OpenCV, SciPy, rawpy) and `exiftool`.
 
 Measured on the iPhone Air (2026-10-19): star focus at **lens position 0.867–0.871** (sharp
 0.84–0.89; NightCap's "infinity" was badly out); focal length 1511 px at half size, k1 ≈ +0.038.
-M31 from a Copenhagen balcony: 1288 × 1 s at ISO 3200, `dngstack.py --solution --darks --flats`
-(M33, the Pleiades, the Double Cluster and M34 are in the same field). Faint diagonal streaks
-remain after darks and flats: an unexplained sensor-fixed pattern, still open.
+M31 from a Copenhagen balcony: 1290 × 1 s at ISO 3200 (M33, the Pleiades, the Double Cluster and M34
+are in the same field): `dngstack.py --solution --flats --self-dark 800`, then Siril
+`subsky -rbf -samples=60 -tolerance=5.0 -smooth=0.1` (the default tolerance leaves a pink horizon
+band), BXT 0.50/0.90, `autostretch -linked -2.8 0.10`, NXT 0.90. The diagonal streaks of the first
+stacks were the sensor's fixed bias pattern: 30 darks were too few, and `--self-dark` removes it.
 
 ## HTTP API
 

@@ -4,7 +4,7 @@
     ~/ASICAP/.venv/bin/python3 -u client/dngstack.py --dir test/sky/stack60 --out test/sky/stack60/stack
     # long runs with foreground in view (the M31 recipe):
     ~/ASICAP/.venv/bin/python3 -u client/dngstack.py --dir run2 run3 --out final/stack \
-        --solution solve/solved.json --darks darks/
+        --solution solve/solved.json --flats flats/ --self-dark 800
 
 Each DNG is demosaiced at half size (2x2 -> 1 pixel, 2016x1512 on the iPhone Air) with a linear
 curve, no auto-brightening and the white balance it was shot with, then registered onto the
@@ -20,6 +20,14 @@ This script applies it (corner gain ~3.9x) unless --no-vignette.
 paper: ISO 800, 16 ms = 44% of full scale). Their median, normalised per Bayer position, divides
 every frame on the raw mosaic and replaces Apple's vignette model (also fixes colour shading).
 Obstructed frames (a box flap or hand lit in front of the lens) are dropped unless --keep-obstructed.
+--self-dark N: build the sensor's fixed pattern from N of the light frames themselves instead of
+--darks. Stars drift across the sensor during a long run while the bias pattern stays put, so a
+3-sigma-clipped mean of the UNALIGNED frames (stars, planes and satellites masked per frame) is
+sky + pattern; its high-pass per Bayer plane is subtracted from every frame. On the M31 run 30
+darks were too few -- their own ~0.8 ADU noise is fixed to the sensor too and walked into the same
+diagonal streaks -- while --self-dark 800 removed them. Saved as <out>_fixedpattern.npy; reuse it
+with --self-dark-file. Without the per-frame source mask, bright-star trails leak into the
+pattern and print thin dark lines along the drift.
 Foreground mask (unless --no-foreground-mask): railings and walls are fixed on the sensor while the
 stars move, so in the median of 25 unaligned frames they stand out; those areas become "no data" in
 every frame, so the stack never mixes them into the sky. --mask-only writes <out>_fgmask.jpg and stops.
@@ -46,6 +54,11 @@ ap.add_argument("--radius", type=float, default=25, help="match radius, px")
 ap.add_argument("--min-inliers", type=int, default=12, help="RANSAC inliers needed to accept a frame's alignment")
 ap.add_argument("--solution", help="phonesolve.py JSON (f_px, k1): undistort every frame first and align with a full homography -- needed when the sky drifts far across the field")
 ap.add_argument("--flats", help="folder of flat frames (same focus; even white light, ~45%% of full scale): every frame is divided by their normalised median on the raw data. Replaces Apple's vignette correction, and also fixes colour shading, dust and pixel response")
+ap.add_argument("--self-dark", type=int, default=0, metavar="N",
+                help="build the sensor-fixed pattern from N of the light frames themselves (sigma-clipped mean of the "
+                     "UNALIGNED frames, high-pass per Bayer plane) and subtract it; replaces --darks, whose own noise "
+                     "is fixed to the sensor and walks into streaks when there are only a few dozen")
+ap.add_argument("--self-dark-file", help="reuse a fixed pattern saved by an earlier --self-dark run (<out>_fixedpattern.npy)")
 ap.add_argument("--darks", help="folder of dark frames (lens covered, same exposure/ISO): their median is subtracted from every frame on the raw data")
 ap.add_argument("--background", type=float, default=0.10, help="stretched sky level (0..1)")
 ap.add_argument("--no-vignette", action="store_true", help="skip Apple's FixVignetteRadial correction")
@@ -107,6 +120,7 @@ def undistort_maps(shape, f, k1):
     return (xd * f + cx).astype(np.float32), (yd * f + cy).astype(np.float32)
 
 FG = None
+SELF = None
 FLAT = None
 if a.flats:
     ffiles = sorted(glob.glob(os.path.join(a.flats, "*.dng")))
@@ -129,7 +143,7 @@ GAIN = None
 def load(f):
     global GAIN
     with rawpy.imread(f) as r:
-        if DARK is not None or FLAT is not None:       # calibrate on the raw mosaic, before demosaicing
+        if DARK is not None or FLAT is not None or SELF is not None:   # calibrate on the raw mosaic
             raw = r.raw_image_visible
             black = float(np.mean(r.black_level_per_channel))
             x = raw.astype(np.float32) - black
@@ -137,6 +151,8 @@ def load(f):
                 x -= DARK
             if FLAT is not None:
                 x /= FLAT
+            if SELF is not None:
+                x -= SELF
             raw[:] = np.clip(x + black, 0, 65535).astype(raw.dtype)
         rgb = r.postprocess(half_size=True, gamma=(1, 1), no_auto_bright=True, output_bps=16,
                             use_camera_wb=True, user_flip=0)
@@ -210,6 +226,68 @@ def starmap(pts, shape):
         if 0 <= int(y) < shape[0] and 0 <= int(x) < shape[1]: m[int(y), int(x)] = 1
     return cv2.GaussianBlur(m, (0, 0), 3)
 
+def calibrated_mosaic(f):
+    with rawpy.imread(f) as r:
+        x = r.raw_image_visible.astype(np.float32) - float(np.mean(r.black_level_per_channel))
+    if DARK is not None: x -= DARK
+    if FLAT is not None: x /= FLAT
+    return x
+
+if a.self_dark_file:
+    SELF = np.load(a.self_dark_file).astype(np.float32)
+    print("fixed pattern loaded from %s" % a.self_dark_file, flush=True)
+elif a.self_dark:
+    # Stars drift across the sensor during a long run while bias/dark structure stays put, so a
+    # sigma-clipped mean of unaligned frames is sky + that structure. Keep only its high-pass part
+    # (per Bayer plane, so colours never mix): that is the fixed pattern, at the lights' own ISO,
+    # exposure and temperature, with noise ~ 1/sqrt(N) of a frame.
+    sel = [files[k] for k in np.linspace(0, len(files) - 1, min(a.self_dark, len(files))).astype(int)]
+
+    def source_mask(x):
+        """Stars, planes and satellites in one frame (per Bayer plane, local noise), grown by 6 px:
+        a bright star trails across the sensor during the run and must not leak into the pattern."""
+        m = np.zeros(x.shape, bool)
+        for dy in (0, 1):
+            for dx in (0, 1):
+                pl = x[dy::2, dx::2]
+                hp = pl - cv2.GaussianBlur(pl, (0, 0), 4)
+                t = 32; h2, w2 = hp.shape
+                tl = np.abs(hp[:h2 // t * t, :w2 // t * t]).reshape(h2 // t, t, w2 // t, t)
+                sig = cv2.resize(np.median(tl, axis=(1, 3)).astype(np.float32) * 1.4826, (w2, h2), interpolation=cv2.INTER_LINEAR)
+                pm = cv2.dilate((hp > 3.5 * sig).astype(np.uint8), np.ones((7, 7), np.uint8)).astype(bool)
+                m[dy::2, dx::2] |= pm
+        # a source in one colour plane masks the whole 2x2 cell
+        cell = m[0::2, 0::2] | m[0::2, 1::2] | m[1::2, 0::2] | m[1::2, 1::2]
+        return np.repeat(np.repeat(cell, 2, 0), 2, 1)[:x.shape[0], :x.shape[1]]
+
+    S1 = None
+    for k, f in enumerate(sel):
+        x = calibrated_mosaic(f); ok = ~source_mask(x)
+        if S1 is None: S1, S2, N1 = np.zeros(x.shape), np.zeros(x.shape), np.zeros(x.shape, np.float32)
+        xd = np.where(ok, x, 0).astype(np.float64)
+        S1 += xd; S2 += xd * xd; N1 += ok
+        if k % 100 == 99: print("%s self-dark pass 1: %d/%d" % (el(), k + 1, len(sel)), flush=True)
+    mu = S1 / np.maximum(N1, 1); sd = np.sqrt(np.maximum(S2 / np.maximum(N1, 1) - mu * mu, 0)) + 1e-3
+    print("%s   sources masked: %.1f%% of samples" % (el(), 100 * (1 - N1.sum() / (N1.size * len(sel)))), flush=True)
+    del S1, S2, N1
+    C1 = np.zeros_like(mu); K1 = np.zeros_like(mu, dtype=np.float32)
+    for k, f in enumerate(sel):
+        x = calibrated_mosaic(f)
+        keep = ~source_mask(x) & (np.abs(x - mu) <= 3 * sd)
+        C1 += np.where(keep, x, 0); K1 += keep
+        if k % 100 == 99: print("%s self-dark pass 2: %d/%d" % (el(), k + 1, len(sel)), flush=True)
+    M_ = (C1 / np.maximum(K1, 1)).astype(np.float32); del C1, K1, mu, sd
+    SELF = np.zeros_like(M_)
+    for dy in (0, 1):
+        for dx in (0, 1):
+            pl = M_[dy::2, dx::2]
+            SELF[dy::2, dx::2] = pl - cv2.GaussianBlur(pl, (0, 0), 6)
+    amp = 1.4826 * float(np.median(np.abs(SELF[SELF.shape[0] // 4:-SELF.shape[0] // 4, SELF.shape[1] // 10:-SELF.shape[1] // 3])))
+    print("%s fixed pattern from %d unaligned lights: %.2f ADU rms (subtracted from every frame)" % (el(), len(sel), amp), flush=True)
+    np.save(a.out + "_fixedpattern.npy", SELF)
+    if DARK is not None:
+        print("   note: --darks is also set; their noise is now subtracted on top -- usually leave them out", flush=True)
+
 STATIC = None
 SOLVE_R = None
 def frame_time(f):
@@ -255,7 +333,9 @@ if not a.no_foreground_mask and len(files) >= 20:
     # frames spread over the run the stars vanish and the foreground stays. Mark 32-px tiles
     # whose level departs from a smooth sky fit, or that are textured, then grow the mask.
     idx = np.linspace(0, len(files) - 1, 25).astype(int)
+    _self, SELF = SELF, None                            # judge foreground on frames with their normal texture
     med = np.median([load(files[k])[..., 1] for k in idx], axis=0)
+    SELF = _self
     t = 32; Hh, Ww = med.shape; th, tw = Hh // t, Ww // t
     tiles = med[:th * t, :tw * t].reshape(th, t, tw, t).transpose(0, 2, 1, 3).reshape(th, tw, -1)
     valid_t = (tiles > -0.5).mean(2) > 0.5
